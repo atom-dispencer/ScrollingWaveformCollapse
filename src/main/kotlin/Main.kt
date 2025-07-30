@@ -5,10 +5,14 @@ import java.awt.Graphics
 import java.awt.Image
 import java.awt.image.BufferedImage
 import java.io.File
+import java.util.*
 import javax.imageio.ImageIO
 import javax.swing.JFrame
 import javax.swing.JPanel
 import javax.swing.Timer
+import kotlin.collections.ArrayList
+import kotlin.collections.HashMap
+import kotlin.collections.HashSet
 import kotlin.random.Random
 import kotlin.random.nextInt
 
@@ -85,11 +89,11 @@ class WaveformCollapse(
     private fun initialiseGrid(dim: Dimension): ArrayList<ArrayList<Superposition>> {
         val columns = ArrayList<ArrayList<Superposition>>()
 
-        for (x in 0..dim.width) {
+        for (x in 0..<dim.width) {
             val row = ArrayList<Superposition>()
             columns.add(row)
 
-            for (y in 0..dim.height) {
+            for (y in 0..<dim.height) {
                 val positions = ArrayList<Blob>()
                 positions.addAll(uniqueBlobs)
                 val superposition = Superposition(positions)
@@ -102,10 +106,10 @@ class WaveformCollapse(
 
     private fun findLowestEntropyCoordinate(): Pair<Int, Int>? {
         var minEntropy = Int.MAX_VALUE
-        val candidates = mutableListOf<Pair<Int, Int>>()
+        val candidates = ArrayList<Pair<Int, Int>>()
 
-        for (x in 0..gridDimensions.width) {
-            for (y in 0..gridDimensions.height) {
+        for (x in 0 until gridDimensions.width) {
+            for (y in 0 until gridDimensions.height) {
                 val superposition = grid[x][y]
                 val size = superposition.positions.size
                 if (size > 1) {
@@ -124,7 +128,9 @@ class WaveformCollapse(
     }
 
     private fun collapseAndPropagate(x: Int, y: Int) {
-        if (grid[x][y].positions.size < 1) {
+        val superposition = getSuperposition(x, y) ?: return
+
+        if (superposition.positions.size < 1) {
             return
         }
 
@@ -144,21 +150,21 @@ class WaveformCollapse(
                 })
         }
 
-        grid[x][y].collapseRandom()
+        superposition.collapseRandom()
         makeUncollapsedNeighboursDirty(x to y)
 
         while (dirty.isNotEmpty()) {
             val p = dirty.first()
             dirty.remove(p);
 
-            if (prunePositions(p.first, p.second, false))
+            if (prunePositions(p.first, p.second))
             {
                 makeUncollapsedNeighboursDirty(p)
             }
         }
     }
 
-    private fun collapseAllStartingAt(x: Int, y: Int) {
+    fun collapseAllStartingAt(x: Int, y: Int) {
         collapseAndPropagate(x, y)
 
         var i = 0
@@ -174,14 +180,14 @@ class WaveformCollapse(
     }
 
     private fun getSuperposition(x: Int, y: Int): Superposition? {
-        if (x < 0 || y < 0 || x > gridDimensions.width || y > gridDimensions.height) {
+        if (x < 0 || y < 0 || x >= gridDimensions.width || y >= gridDimensions.height) {
             return null
         }
 
         return grid[x][y]
     }
 
-    private fun prunePositions(x: Int, y: Int, forceRandomCollapse: Boolean): Boolean {
+    private fun prunePositions(x: Int, y: Int): Boolean {
         val blob = getSuperposition(x, y) ?: return false
         if (blob.collapsed() || blob.positions.size <= 1) return false
 
@@ -217,19 +223,39 @@ class WaveformCollapse(
         return true
     }
 
-    fun prepareNextGrid() {
+    fun scrollRight() {
+        Collections.rotate(grid, -1);
 
+        val rightColumn = gridDimensions.width - 1
+
+        for (row in 0 until gridDimensions.height) {
+            val positions = ArrayList<Blob>()
+
+            val blobWest = getSuperposition(rightColumn - 1, row)!!.positions[0]
+            val candidates = patterns[blobWest]!!.east
+
+            if (candidates.isNotEmpty()) {
+                positions.addAll(candidates)
+            } else {
+                candidates.addAll(uniqueBlobs)
+            }
+
+            grid[rightColumn][row] = Superposition(positions)
+        }
+
+        val ry = Random.Default.nextInt(0, gridDimensions.height)
+        collapseAllStartingAt(rightColumn, ry)
     }
 
-    private fun gridToImage(): BufferedImage {
+    fun gridToImage(): BufferedImage {
         val outputWidth = gridDimensions.width * gridResolution
         val outputHeight = gridDimensions.height * gridResolution
 
         val output = BufferedImage(outputWidth, outputHeight, BufferedImage.TYPE_INT_RGB)
         val graphics = output.graphics
 
-        for (x in 0..gridDimensions.width) {
-            for (y in 0..gridDimensions.height) {
+        for (x in 0 until gridDimensions.width) {
+            for (y in 0 until gridDimensions.height) {
 
                 val superposition = getSuperposition(x, y) ?: continue
 
@@ -384,15 +410,23 @@ fun main() {
 
     val collapse = WaveformCollapse(img, 3, Dimension(6, 6))
     val panel = ImagePanel(collapse.image)
+    panel.image = collapse.image
     frame.add(panel)
 
-    var image: Image = collapse.image
+//    // Generate a series of new images
+//    val timer = Timer(2000) {
+//        val collapse2 = WaveformCollapse(img, 3, Dimension(6, 6))
+//        panel.image = collapse2.image
+//        frame.repaint()
+//    }
 
+    // Scroll one image around
     val timer = Timer(2000) {
-        val collapse2 = WaveformCollapse(img, 3, Dimension(6, 6))
-        panel.image = collapse2.image
         frame.repaint()
+        collapse.scrollRight()
+        panel.image = collapse.gridToImage()
     }
+
     timer.isRepeats = true
     timer.start()
 
