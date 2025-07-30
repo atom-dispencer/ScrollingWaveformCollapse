@@ -76,7 +76,7 @@ class WaveformCollapse(
         val random = Random.Default
         val rx = random.nextInt(0..gridDimensions.width)
         val ry = random.nextInt(0..gridDimensions.height)
-        collapseAllStartingAt(rx, ry, 5)
+        collapseAllStartingAt(rx, ry)
 
         image = gridToImage()
     }
@@ -158,12 +158,18 @@ class WaveformCollapse(
         }
     }
 
-    private fun collapseAllStartingAt(x: Int, y: Int, extraIterations: Int) {
+    private fun collapseAllStartingAt(x: Int, y: Int) {
         collapseAndPropagate(x, y)
 
-        for (i in 0..extraIterations){
-            val p = findLowestEntropyCoordinate() ?: break
+        var i = 0
+        while (true) {
+            val p = findLowestEntropyCoordinate()
+            if (p == null) {
+                println("Finished WFC propagation in $i iterations")
+                break
+            }
             collapseAndPropagate(p.first, p.second);
+            i++
         }
     }
 
@@ -291,16 +297,6 @@ class WaveformCollapse(
                     addBlobPatterns(rotated, x, y)
                 }
             }
-        }
-
-        saveBlobsToDisk(uniqueBlobs, File(".unique_blobs"))
-        for ((index, b) in uniqueBlobs.withIndex()) {
-            val p = patterns[b]!!
-
-            saveBlobsToDisk(ArrayList(p.north.toList()), File(".unique_blobs/north_$index"))
-            saveBlobsToDisk(ArrayList(p.east.toList()), File(".unique_blobs/east_$index"))
-            saveBlobsToDisk(ArrayList(p.south.toList()), File(".unique_blobs/south_$index"))
-            saveBlobsToDisk(ArrayList(p.west.toList()), File(".unique_blobs/west_$index"))
         }
     }
 
