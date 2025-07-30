@@ -36,7 +36,7 @@ data class BlobPattern(
 
 data class Superposition(val positions: ArrayList<Blob>) {
 
-    var collapsed = positions.size == 1
+    fun collapsed(): Boolean =  positions.size == 1
 
     fun collapseTo(blob: Blob) {
         positions.clear()
@@ -76,7 +76,7 @@ class WaveformCollapse(
         val random = Random.Default
         val rx = random.nextInt(0..gridDimensions.width)
         val ry = random.nextInt(0..gridDimensions.height)
-        collapseAllStartingAt(rx, ry)
+        collapseAllStartingAt(rx, ry, 5)
 
         image = gridToImage()
     }
@@ -100,61 +100,70 @@ class WaveformCollapse(
         return columns
     }
 
-    private fun collapseAllStartingAt(x: Int, y: Int) {
+    private fun findLowestEntropyCoordinate(): Pair<Int, Int>? {
+        var minEntropy = Int.MAX_VALUE
+        val candidates = mutableListOf<Pair<Int, Int>>()
+
+        for (x in 0..gridDimensions.width) {
+            for (y in 0..gridDimensions.height) {
+                val superposition = grid[x][y]
+                val size = superposition.positions.size
+                if (size > 1) {
+                    if (size < minEntropy) {
+                        minEntropy = size
+                        candidates.clear()
+                        candidates.add(x to y)
+                    } else if (size == minEntropy) {
+                        candidates.add(x to y)
+                    }
+                }
+            }
+        }
+
+        return if (candidates.isNotEmpty()) candidates.random() else null
+    }
+
+    private fun collapseAndPropagate(x: Int, y: Int) {
         if (grid[x][y].positions.size < 1) {
             return
         }
 
-        grid[x][y].collapseRandom()
-
         val dirty = HashSet<Pair<Int, Int>>();
+        val getNeighbours = { pair: Pair<Int, Int> -> listOf(
+            pair.first to pair.second - 1,
+            pair.first + 1 to pair.second,
+            pair.first to pair.second + 1,
+            pair.first - 1 to pair.second
+            )}
+        val makeUncollapsedNeighboursDirty = { pair: Pair<Int, Int> ->
+            dirty.addAll(
+                getNeighbours(pair).mapNotNull { neighbour ->
+                    val superposition = getSuperposition(neighbour.first, neighbour.second)
+                    val size = superposition?.positions?.size
+                    if (size != null && size > 1) neighbour else null
+                })
+        }
 
-        var collapsed = 1
-        var r = 1
-        var forceRandomCollapse = false
-        while (collapsed < gridDimensions.width * gridDimensions.height) {
+        grid[x][y].collapseRandom()
+        makeUncollapsedNeighboursDirty(x to y)
 
-            var collapsedThisRound = 0
-            var dx = x - r
-            var dy = y - r
+        while (dirty.isNotEmpty()) {
+            val p = dirty.first()
+            dirty.remove(p);
 
-            while (dx++ < x + r) {
-                if (collapseAt(dx, dy, forceRandomCollapse)) {
-                    collapsedThisRound++
-                    forceRandomCollapse = false
-                }
+            if (prunePositions(p.first, p.second, false))
+            {
+                makeUncollapsedNeighboursDirty(p)
             }
-            while (dy++ < y + r) {
-                if (collapseAt(dx, dy, forceRandomCollapse)) {
-                    collapsedThisRound++
-                    forceRandomCollapse = false
-                }
-            }
-            while (dx-- > x - r) {
-                if (collapseAt(dx, dy, forceRandomCollapse)) {
-                    collapsedThisRound++
-                    forceRandomCollapse = false
-                }
-            }
-            while (dy-- > y - r) {
-                if (collapseAt(dx, dy, forceRandomCollapse)) {
-                    collapsedThisRound++
-                    forceRandomCollapse = false
-                }
-            }
+        }
+    }
 
-            // If none have collapsed this round and the force flag has not been reset by a successful force collapse,
-            // all the superpositions have collapsed, and we can increase our radius.
-            //
-            // If the force flag was not set, then we should raise it to see if any superpositions have not yet
-            // collapsed.
-            if (collapsedThisRound == 0 && forceRandomCollapse) {
-                r++
-            } else if (collapsedThisRound == 0) {
-                forceRandomCollapse = true
-            }
+    private fun collapseAllStartingAt(x: Int, y: Int, extraIterations: Int) {
+        collapseAndPropagate(x, y)
 
-            collapsed += collapsedThisRound
+        for (i in 0..extraIterations){
+            val p = findLowestEntropyCoordinate() ?: break
+            collapseAndPropagate(p.first, p.second);
         }
     }
 
@@ -166,14 +175,9 @@ class WaveformCollapse(
         return grid[x][y]
     }
 
-    private fun collapseAt(x: Int, y: Int, forceRandomCollapse: Boolean): Boolean {
+    private fun prunePositions(x: Int, y: Int, forceRandomCollapse: Boolean): Boolean {
         val blob = getSuperposition(x, y) ?: return false
-        if (blob.positions.size <= 1) return false
-
-        if (forceRandomCollapse) {
-            blob.collapseRandom()
-            return true
-        }
+        if (blob.collapsed() || blob.positions.size <= 1) return false
 
         val blobNorth = getSuperposition(x, y - 1)
         val blobEast = getSuperposition(x + 1, y)
@@ -181,10 +185,10 @@ class WaveformCollapse(
         val blobWest = getSuperposition(x - 1, y)
 
         val toRemove = HashSet<Blob>()
+
         for (position in blob.positions) {
             val pattern = patterns[position] ?: continue
 
-            // Check if there's at least one valid north neighbor
             val validNorth = blobNorth == null || pattern.north.any { blobNorth.positions.contains(it) }
             val validEast = blobEast == null || pattern.east.any { blobEast.positions.contains(it) }
             val validSouth = blobSouth == null || pattern.south.any { blobSouth.positions.contains(it) }
@@ -195,11 +199,13 @@ class WaveformCollapse(
             }
         }
 
-        // Remove blocked positions.
-        // If no positions would remain, we also randomly fix the discontinuity
+        if (toRemove.isEmpty()) return false
+
         blob.positions.removeAll(toRemove)
-        if (blob.positions.size < 1) {
-            blob.positions.add(toRemove.shuffled()[0])
+
+        // If we find a contradiction, we collapse that superposition to a random state
+        if (blob.positions.isEmpty()) {
+            blob.positions.addAll(uniqueBlobs.shuffled().take(1))
         }
 
         return true
